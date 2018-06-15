@@ -1,9 +1,14 @@
+; nREPL Adapter for Pixie, A small, fast, native lisp with "magical" powers
+;;
+;; by Otto Linnemann
+;; (C) 2018, GNU General Public Licence
+
 (ns nrepl-adapter.core
   (:require [clojure.tools.nrepl.transport :as t]
             [clojure.tools.cli :refer [parse-opts]]
             [clojure.java.io :as io]
             [clojure.string :as str])
-  (:use [clojure.tools.nrepl.server :only [start-server stop-server]]
+  (:use [clojure.tools.nrepl.server :only [start-server stop-server default-handler]]
         [clojure.tools.nrepl.misc :only [response-for uuid]]
         [clojure.tools.nrepl.middleware.pr-values :only [pr-values]]
         [lib.simple-tcp-connection.client])
@@ -27,38 +32,6 @@
       (with-open [stream (io/input-stream props)]
         (let [props (doto (Properties.) (.load stream))]
           (.getProperty props "version"))))))
-
-
-(defn- create-session
-  "Returns a new atom containing a map of bindings as per
-   `clojure.core/get-thread-bindings`.  Values for *out*, *err*, and *in*
-   are obtained using `session-in` and `session-out`, *ns* defaults to 'user,
-   and other bindings as optionally provided in `baseline-bindings` are
-   merged in."
-  [& {:keys [transport baseline-bindings client-addr client-port]
-      :or {baseline-bindings {}}}]
-  (let [client-handle
-        (when (and client-addr client-port) (create-tcp-server-connection-handler client-addr client-port 5000))]
-    (if client-handle
-      (atom (merge baseline-bindings {:client-handle client-handle}))
-      (atom baseline-bindings))))
-
-
-(defn- register-session
-  [msg]
-  (let [{:keys [transport session]} msg
-        id (uuid)]
-    (let [session (create-session :transport transport :baseline-bindings @session)]
-      (swap! sessions assoc id session)
-      (t/send transport (response-for msg :status :done :new-session id)))))
-
-
-(defn- close-session
-  [msg]
-  (let [{:keys [transport session id]} msg]
-    (release-tcp-server-processes (:client-handle @session))
-    (swap! sessions dissoc id)
-    (t/send transport (response-for msg :status #{:done :session-closed}))))
 
 
 (defn- split-result-from-prompt
@@ -91,49 +64,80 @@
       (str/trim)))
 
 
+(defn- expr-supported
+  "returns true when code can be evualed
+
+   Clojure, cider and ccw expressions are filtered out."
+  [exp]
+  (not
+   (re-matches
+    #"cider.nrepl|clojure.core|\(ccw.debug.serverrepl/namespaces-info\)"
+    exp)))
+
+
+(def ^{:private true} the-client-handle (atom nil))
+
+
 (defn- bind-inferior-repl-handler-connection
+  "retruns a handler which overwrites most improtant nREPL operations
+   for forwarding to external Pixie TCP REPL."
   [client-addr client-port]
-  (fn [{:keys [op ns session code file line column id transport] :as msg}]
-    (let [the-session (if session
-                        (@sessions session)
-                        (create-session :transport transport
-                                        :client-addr client-addr :client-port client-port))]
-      (if-not the-session
-        (t/send transport (response-for msg :status #{:error :unknown-session}))
-        (let [msg (assoc msg :session the-session)]
-          (case op
-            "clone" (register-session msg)
-            "close" (close-session msg)
-            "describe"
-            (do (t/send transport (response-for msg :status :done :ops {:eval {}})))
-            "eval"
-            (let [client-handle (:client-handle @the-session)
-                  resp (if (re-find #"cider.nrepl|clojure.core" code)
-                         "error"
-                         (send-tcp-server-request client-handle (strip-cr-and-comments code)))
-                  [result ns] (if resp
-                                (split-result-from-prompt resp)
-                                ["could not connect to telnet REPL error!" ""])]
-              (t/send transport
-                      (response-for msg :value
-                                    (let [code (format "(pr-str %s)" code)]
-                                      (if (re-find #"\*ns\*" code)
-                                        (pr-str (strip-namespace-tags result))
-                                        result)
-                                      )))
-              (t/send transport
+  (fn [h]
+    (fn [{:keys [op ns session code file line column id transport] :as msg}]
+      (let [client-handle (swap! the-client-handle
+                                 #(or % (create-tcp-server-connection-handler
+                                         client-addr client-port 5000)))]
+        (case op
+          "clone" (h msg)
+          "close" (h msg)
+
+          "describe"
+          (do (t/send transport
+                      (response-for msg
+                                    :status :done
+                                    :ops {:describe {} :clone {} :close {} :eval {}})))
+
+          "eval"
+          (let [exp-valid (expr-supported code)
+                resp (if exp-valid
+                       (send-tcp-server-request client-handle (strip-cr-and-comments code))
+                       "error")
+                [result ns] (if resp
+                              (split-result-from-prompt resp)
+                              ["could not connect to telnet REPL error!" ""])]
+            (if (re-matches #"\(clojure-version\)" code)
+              (t/send transport (response-for msg :value "Pixie 0.1"))
+              (if exp-valid
+                (t/send transport
+                        (response-for msg :value
+                                      (let [code (format "(pr-str %s)" code)]
+                                        (if (re-find #"\*ns\*" code)
+                                          (pr-str (strip-namespace-tags result))
+                                          result))))))
+            (t/send transport
+                    (if exp-valid
                       (if resp
                         (response-for msg :status :done :ns ns)
-                        (response-for msg :status #{:error :unknown-session :done}))))))))))
+                        (response-for msg :status #{:error :unknown-session :done}))
+                      (response-for msg {:status #{:eval-error :done}
+                                         :ex "expression not supported"
+                                         :root-ex "expression not supported"}))))
+          (h msg))))))
 
 
 (defn- start-inf-repl-adapter
   [server-port client-addr client-port]
   (def server (start-server :port server-port :handler
-                            (bind-inferior-repl-handler-connection client-addr client-port))))
+                            ((bind-inferior-repl-handler-connection client-addr client-port)
+                             (default-handler)))))
 
-; (start-inf-repl-adapter 9000 "localhost" 37147)
-; (stop-server server)
+
+(comment
+  (def server (start-inf-repl-adapter 37148 "localhost" 37147))
+  (stop-server server)
+
+  (def server (start-server :port 37148 :handler (default-handler)))
+  )
 
 
 (defn str2port-num
@@ -160,6 +164,7 @@
 
 
 (defn- cli
+  "command line interface"
   [& args]
   (let [opts (parse-opts args cli-options)
         options (:options opts)
@@ -170,7 +175,7 @@
         title-str (str
                    "nrepl-adapter: nREPL to inferior Shell REPL Adapter\n"
                    (format "      Version: %s, refer to https://github.com/linneman/nrepl-adapter for more information\n" (get-version 'nrepl-adapter))
-                   "      (C) 2017, GNU General Public Licence by Otto Linnemann\n")
+                   "      (C) 2018, GNU General Public Licence by Otto Linnemann\n")
         {:keys [server-port client-port client-addr]} options
         [server-port client-port] (map str2port-num [server-port client-port])]
     (println title-str)
@@ -196,6 +201,7 @@
   (cli "-h")
   (cli)
   )
+
 
 (defn -main [& args]
   (try
