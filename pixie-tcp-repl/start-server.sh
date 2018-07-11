@@ -1,4 +1,5 @@
 #/bin/sh
+cd $(dirname "$0")
 
 PIXIE=/usr/local/bin/pixie
 PIXIE_PATH="-l src"
