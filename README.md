@@ -75,6 +75,11 @@ implementation:
 When successfully started the Pixie REPL instance shell display:
     ___ TCP-REPL SERVER RUNNING ___
 
+Alternatively you can use socat to redirect the standard I/O of any Lisp REPL
+to TCP socket via the following command:
+
+    socat tcp-listen:37147,reuseaddr,fork exec:cvx,pty,setsid,setpgid,stderr,ctty,echo=0
+
 ## Shell 2
 
 Now invoke the nREPL adapter on a second shell by the following command:

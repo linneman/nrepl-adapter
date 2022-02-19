@@ -1,16 +1,17 @@
 ; nREPL Adapter for Pixie, A small, fast, native lisp with "magical" powers
+;                   and other Lisps with standard I/O repls
 ;;
 ;; by Otto Linnemann
-;; (C) 2018, GNU General Public Licence
+;; (C) 2018-2022, GNU General Public Licence
 
 (ns nrepl-adapter.core
-  (:require [clojure.tools.nrepl.transport :as t]
+  (:require [nrepl.transport :as t]
             [clojure.tools.cli :refer [parse-opts]]
             [clojure.java.io :as io]
             [clojure.string :as str])
-  (:use [clojure.tools.nrepl.server :only [start-server stop-server default-handler]]
-        [clojure.tools.nrepl.misc :only [response-for uuid]]
-        [clojure.tools.nrepl.middleware.pr-values :only [pr-values]]
+  (:use [nrepl.server :only [start-server stop-server default-handler]]
+        [nrepl.misc :only [response-for uuid]]
+        [nrepl.middleware.pr-values :only [pr-values]]
         [lib.simple-tcp-connection.client])
   (:import java.util.Properties
            [java.net InetAddress])
@@ -106,7 +107,7 @@
                               (split-result-from-prompt resp)
                               ["could not connect to telnet REPL error!" ""])]
             (if (re-matches #"\(clojure-version\)" code)
-              (t/send transport (response-for msg :value "Pixie 0.1"))
+              (t/send transport (response-for msg :value (get-version 'nrepl-adapter)))
               (if exp-valid
                 (t/send transport
                         (response-for msg :value
@@ -175,7 +176,7 @@
         title-str (str
                    "nrepl-adapter: nREPL to inferior Shell REPL Adapter\n"
                    (format "      Version: %s, refer to https://github.com/linneman/nrepl-adapter for more information\n" (get-version 'nrepl-adapter))
-                   "      (C) 2018, GNU General Public Licence by Otto Linnemann\n")
+                   "      (C) 2018-2022, GNU General Public Licence by Otto Linnemann\n")
         {:keys [server-port client-port client-addr]} options
         [server-port client-port] (map str2port-num [server-port client-port])]
     (println title-str)

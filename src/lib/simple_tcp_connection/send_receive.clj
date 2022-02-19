@@ -20,6 +20,6 @@
   "Send the given string message out over the given socket"
   [socket msg]
   (let [writer (io/writer socket)]
-    (.write writer msg)
+    (.write writer (str msg "\n"))
     (.flush writer)
     (count msg)))
