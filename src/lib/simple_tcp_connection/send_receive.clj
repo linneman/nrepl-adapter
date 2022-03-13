@@ -11,7 +11,7 @@
   "Read data from the given socket"
   [socket]
   (let [reader (io/reader socket)
-        buf (char-array 8192)
+        buf (char-array 65536)
         bytes-read (.read reader buf 0 (count buf))]
     (String. buf 0 bytes-read)))
 

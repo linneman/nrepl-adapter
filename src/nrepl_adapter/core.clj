@@ -38,12 +38,8 @@
 (defn- split-result-from-prompt
   "returns vector with result and last line which is the prompt"
   [s]
-  (let [lines (str/split s #"\n")]
-    [(apply str (interpose "\n" (butlast lines)))
-     (-> (last lines)
-         (str/replace #"[=>].*$" "")
-         (str/replace #"[<]" "")
-         (str/trim))]))
+  (let [res [(str/trim s) "cvx"]]
+    res))
 
 
 (defn- strip-cr-and-comments
